@@ -1,0 +1,678 @@
+---
+title: "Final Project"
+author: "Rahmat"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: pdflatex
+header-includes:
+  - \usepackage{float}     
+  - \usepackage{booktabs}  
+---
+
+```{r}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(e1071)
+library(ggplot2)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(glmnet)
+library(randomForest)
+library(Metrics)
+
+```
+
+\section{Introduction}
+
+Climate change and global warming are driven largely by anthropogenic emissions of carbon dioxide (CO$_2$). 
+Understanding how national energy use and economic activity translate into CO$_2$ emissions is essential for 
+designing effective climate and environmental policies. In this project, I analyze country-level CO$_2$ emissions 
+per capita and their relationship with key economic and energy-related predictors.
+
+The data were obtained from the ``CO$_2$ and Greenhouse Gas Emissions'' collection maintained by Our World in Data. 
+The original dataset contains 25,204 observations and 58 variables and includes annual information on CO$_2$ emissions, 
+greenhouse gases, energy use, and socio-economic indicators for many countries and territories. The main goal of this 
+project is to determine whether CO$_2$ emissions per capita can be effectively modeled and predicted using a small set 
+of interpretable economic and energy-use variables.
+
+I chose this topic because it aligns closely with my long-term interest in environmental health, pollution, and the role 
+of data-driven methods in informing public policy. As a statistics student interested in environmental applications, 
+this project provides an opportunity to connect statistical modeling with a substantive problem that I care about: how 
+energy consumption and economic growth contribute to global emissions.
+
+To demonstrate that the dataset is worth analyzing, I first explore its structure, variable types, and degree of missingness. 
+I then focus on a subset of variables that are directly related to CO$_2$ emissions per capita, energy use, and economic scale. 
+The remainder of the report presents a detailed data evaluation, modeling strategy, analysis of results, and a discussion of 
+the strengths and limitations of the chosen methods.
+
+\section{Data Evaluation and Preparation}
+
+\subsection{Original Dataset and Cleaning Steps}
+
+The original dataset contains 25,204 rows and 58 columns, covering multiple countries and years. However, many variables 
+for earlier years suffer from substantial missingness, particularly for components of greenhouse gas emissions and 
+energy-use indicators. To obtain a cleaner subset for modeling, I applied the following steps:
+
+\begin{itemize}
+    \item Restricted the analysis to years $\geq 1990$, where CO$_2$ and energy-related variables are more consistently reported.
+    \item Selected 11 variables related to emissions, economic activity, and energy use.
+    \item Removed rows with missing values in any of the selected variables.
+\end{itemize}
+
+After these steps, the cleaned dataset used for analysis consists of 2,299 observations and 11 variables. 
+Table~\ref{tab:datasummary} summarizes the change in dataset size.
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Dataset} & \textbf{Rows} & \textbf{Columns} \\
+\midrule
+Original (all years, all variables) & 25{,}204 & 58 \\
+Cleaned (years $\geq 1990$, selected vars, complete cases) & 2{,}299 & 11 \\
+\bottomrule
+\end{tabular}
+\caption{Summary of dataset size before and after cleaning.}
+\label{tab:datasummary}
+\end{table}
+
+\subsection{Variables Used in the Analysis}
+
+The final modeling dataset includes one country identifier, one time variable (year), and nine continuous predictors related 
+to CO$_2$ emissions, population, GDP, and energy use. Table~\ref{tab:vardesc} lists each variable, its description, and type.
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Variable} & \textbf{Description} & \textbf{Type} \\
+\midrule
+\texttt{country}   & Country or territory name & Categorical \\
+\texttt{year}      & Calendar year & Numeric \\
+\texttt{co2\_per\_capita} & CO$_2$ emissions per capita (tonnes) & Numeric \\
+\texttt{gdp}       & Gross domestic product (constant dollars) & Numeric \\
+\texttt{population} & Total population & Numeric \\
+\texttt{coal\_co2} & CO$_2$ emissions from coal & Numeric \\
+\texttt{oil\_co2}  & CO$_2$ emissions from oil & Numeric \\
+\texttt{gas\_co2}  & CO$_2$ emissions from natural gas & Numeric \\
+\texttt{primary\_energy\_consumption} & Total primary energy consumption & Numeric \\
+\texttt{energy\_per\_capita} & Energy use per person & Numeric \\
+\texttt{energy\_per\_gdp} & Energy use per unit of GDP & Numeric \\
+\bottomrule
+\end{tabular}
+\caption{Variables used in the modeling dataset, with descriptions and types.}
+\label{tab:vardesc}
+\end{table}
+
+\subsection{Exploratory Analysis and Transformations}
+
+Exploratory plots indicated that several key variables, including CO$_2$ emissions per capita, GDP, population, and the 
+fuel-specific emissions (coal, oil, gas), were strongly right-skewed. In addition, a correlation heatmap showed substantial 
+correlation among the energy and emissions variables, suggesting multicollinearity.
+
+To address skewness and make relationships more linear, I applied log-transformations to CO$_2$ emissions per capita, GDP, 
+population, coal, oil, gas, total energy consumption, energy per capita, and energy per GDP. The response variable for 
+modeling is therefore
+\[
+\texttt{log\_co2\_pc} = \log(\texttt{co2\_per\_capita} + 1),
+\]
+with similar log-transformations defined for the predictors (a small constant is added where needed to avoid taking 
+the log of zero).
+
+The combination of data cleaning, restriction to modern years, and log-transformations yields a relatively large, 
+clean, and well-behaved dataset suitable for regression and machine learning models.
+
+\section{Modeling Approach}
+
+\subsection{Train--Test Split}
+
+To evaluate predictive performance, the cleaned and transformed dataset was randomly split into an 80\% training set and a 
+20\% test set. All model fitting and tuning were carried out on the training data only. The response variable for both models 
+was the log-transformed CO$_2$ emissions per capita (\texttt{log\_co2\_pc}), and the predictors were the corresponding 
+log-transformed versions of GDP, population, coal CO$_2$, oil CO$_2$, gas CO$_2$, total energy consumption, energy per capita, 
+and energy per GDP.
+
+\subsection{Modeling Framework}
+
+Two modeling approaches were selected:
+
+\begin{itemize}
+    \item \textbf{Ridge Regression (Interpretable Model):}  
+    Ridge regression incorporates an $\ell_2$ penalty that shrinks coefficients toward zero without eliminating predictors. 
+    This penalty stabilizes coefficient estimates in the presence of multicollinearity and allows all predictors to remain 
+    in the model, which is desirable when each variable represents a meaningful aspect of national energy use or emissions. 
+    The ridge penalty parameter $\lambda$ was selected using 10-fold cross-validation on the training set.
+
+    \item \textbf{Random Forest (Predictive Model):}  
+    Random forests are ensemble tree models that capture nonlinear relationships and interactions between predictors. 
+    They are relatively robust to skewness and multicollinearity and often provide strong predictive performance. 
+    A 10-fold cross-validated random forest was fit using 500 trees, a node size of 5, and \texttt{mtry} = 3 predictors 
+    considered at each split. Test-set performance was used to assess out-of-sample accuracy.
+\end{itemize}
+
+The next sections present the fitted models, cross-validation results, and comparative performance of the ridge and 
+random forest models.
+
+\subsection{Ridge Regression Details}
+
+The ridge model was implemented using the \texttt{glmnet} package. The predictors were assembled into a model matrix, and 
+\texttt{glmnet} automatically standardized each predictor (subtracting its mean and dividing by its standard deviation) before 
+fitting the penalized regression. A sequence of candidate $\lambda$ values was considered, and 10-fold cross-validation was 
+used to estimate the mean squared error for each value of $\lambda$.
+
+The optimal penalty parameter, denoted $\lambda_{\min}$, was chosen as the value that minimized the cross-validated error. 
+The final ridge model was then refit on the full training data using this value of $\lambda_{\min}$, and predictions were 
+generated for both the training and test sets.
+
+\subsection{Random Forest Details}
+
+The random forest model was implemented using the \texttt{randomForest} and \texttt{caret} packages. A 10-fold 
+cross-validation procedure was used to tune the hyperparameter \texttt{mtry}, which controls the number of predictors 
+randomly sampled at each split in each tree. The final model used \texttt{mtry} = 3, 500 trees (\texttt{ntree} = 500), 
+and a minimum node size of 5. These settings balance predictive accuracy and computational cost.
+
+Random forest predictions for the test set were obtained by averaging predictions across all trees. In addition, a variable 
+importance plot was produced to identify which predictors contributed most strongly to reducing prediction error.
+
+\section{Analysis of Results}
+
+This section evaluates the predictive performance of the ridge regression and random forest models using the independent 
+test set. Two metrics were used for assessment: the Root Mean Squared Error (RMSE), which penalizes larger errors more 
+heavily, and the Mean Absolute Error (MAE), which measures the average magnitude of prediction error. Lower values of both 
+metrics indicate better predictive accuracy.
+
+\subsection{Test Set Performance}
+
+Table~\ref{tab:performance} summarizes the test-set RMSE and MAE for both models. These values provide a direct comparison 
+of how well each approach generalizes to new data.
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{RMSE (Test)} & \textbf{MAE (Test)} \\
+\midrule
+Ridge Regression  & 0.22496 & 0.16849 \\
+Random Forest     & 0.06546 & 0.03953 \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of test-set predictive accuracy for ridge regression and random forest.}
+\label{tab:performance}
+\end{table}
+
+\subsection{Model Comparison}
+
+The results reveal substantial differences between the two models. Ridge regression, a linear shrinkage method, achieved a 
+test RMSE of 0.22496 and a test MAE of 0.16849. The closeness of its training and test errors indicates that the ridge model 
+does not overfit and provides a stable linear approximation of the relationship between log CO$_2$ emissions and the predictors.
+
+Random forest, however, demonstrated considerably stronger predictive performance, with a test RMSE of 0.06546 and a test MAE 
+of 0.03953. These values are markedly lower than those of ridge regression, suggesting that the relationships between national 
+CO$_2$ emissions and the energy and economic predictors exhibit meaningful nonlinearities and interactions that a linear model 
+cannot fully capture.
+
+\subsection{Interpretation of Error Metrics}
+
+RMSE penalizes large errors more severely than MAE. The random forest model achieves both lower RMSE and lower MAE, indicating 
+that it not only reduces large prediction mistakes but also improves overall accuracy across all observations. Ridge regression 
+performs reasonably well but displays higher systematic error, suggesting that its linear structure is too restrictive to fully 
+capture the variation in CO$_2$ emissions per capita.
+
+\subsection{Variable Importance in the Random Forest}
+
+The variable importance plot for the random forest model shows which predictors contribute most strongly to reducing prediction 
+error. Energy use per capita and fossil fuel emissions (especially coal and oil) emerge as highly important predictors, reflecting 
+their central role in determining CO$_2$ emissions per capita. Population and GDP per capita also contribute, but their importance 
+is lower once energy and fuel-specific emissions are included.
+
+\section{Discussion of Final Models and Analysis}
+
+This section presents the final ridge regression model, interprets its coefficients, and summarizes the substantive and predictive 
+conclusions drawn from both modeling approaches.
+
+\subsection{Final Ridge Regression Model}
+
+Using 10-fold cross-validation, the optimal penalty parameter for ridge regression was identified as $\lambda_{\min}$. The 
+corresponding coefficient estimates indicate that the model relies primarily on the log-transformed predictors. The final ridge 
+model can be written as:
+
+\begin{equation}
+\begin{aligned}
+\widehat{\text{log\_co2\_pc}} \;=\;& 
+\beta_0 
++ \beta_1 \cdot \text{log\_gdp} 
++ \beta_2 \cdot \text{log\_pop} 
++ \beta_3 \cdot \text{log\_coal} \\
+&+ \beta_4 \cdot \text{log\_oil}
++ \beta_5 \cdot \text{log\_gas}
++ \beta_6 \cdot \text{log\_energy} \\
+&+ \beta_7 \cdot \text{log\_epc}
++ \beta_8 \cdot \text{log\_epg}.
+\end{aligned}
+\end{equation}
+
+
+Because the model is log--log, each coefficient represents an elasticity: the percent change in CO$_2$ emissions per capita 
+associated with a 1\% change in the predictor, holding all other predictors constant.
+
+\begin{itemize}
+    \item \textbf{Energy per Capita ($\beta = 0.314$):}  
+    A 1\% increase in energy consumption per person is associated with an estimated 0.31\% increase in CO$_2$ emissions per 
+    capita. This is the strongest effect and underscores the central role of national energy intensity in driving emissions.
+
+    \item \textbf{Coal, Oil, and Gas CO$_2$ ($\beta = 0.106$, $0.092$, $0.066$):}  
+    Each fuel source positively contributes to emissions. A 1\% increase in coal-related emissions increases total emissions 
+    by about 0.11\%, oil by 0.09\%, and gas by 0.07\%. These results reflect the high carbon intensity of fossil fuel consumption.
+
+    \item \textbf{Population ($\beta = -0.152$):}  
+    Larger national populations are associated with lower CO$_2$ emissions per capita. This reflects global patterns where 
+    densely populated countries tend to have lower per-person emissions than small, wealthy nations.
+
+    \item \textbf{GDP ($\beta = -0.031$):}  
+    After controlling for energy use and fossil fuel emissions, higher GDP per capita is slightly associated with lower 
+    emissions, suggesting that economic development may accompany modest improvements in efficiency.
+
+    \item \textbf{Energy per GDP ($\beta \approx -0.001$):}  
+    More energy-efficient economies exhibit slightly lower emissions, though the effect is small once other predictors are 
+    included.
+\end{itemize}
+
+\subsection{Summary of Model Performance}
+
+Ridge regression offers interpretability, stable coefficient estimates, and insight into the relative influence of each predictor. 
+However, its linear structure limits its predictive power when relationships are nonlinear. Random forest provides substantially 
+higher predictive accuracy because it models complex patterns and interactions automatically. The trade-off is interpretability: 
+although variable importance plots identify influential predictors, the model does not yield an explicit equation.
+
+If the goal is prediction, random forest is the superior model. If the goal is interpretation and understanding, ridge regression 
+provides meaningful elasticity-based insights that connect directly to policy-relevant quantities.
+
+\section{Conclusion}
+
+This project examined the economic and energy-related drivers of national CO$_2$ emissions per capita using a large international 
+dataset. Through exploratory data analysis, transformations, and two complementary modeling approaches, I gained a deeper 
+understanding of both the structure of the data and the capabilities of different statistical learning methods.
+
+From a substantive perspective, the analysis highlights the central role of energy use per capita and fossil fuel consumption in 
+driving emissions. Coal, oil, and gas all contribute positively to CO$_2$ emissions per capita, while measures such as population 
+and GDP per capita suggest that some countries achieve modest efficiency gains as they grow wealthier or more densely populated. 
+These findings are consistent with the idea that energy intensity and fuel mix are key levers for reducing emissions.
+
+From a modeling perspective, the project illustrated the strengths and weaknesses of ridge regression and random forest. 
+Ridge regression provided an interpretable linear model that handled multicollinearity and yielded elasticity-based interpretations 
+for each predictor. Random forest, in contrast, delivered substantially lower prediction errors by capturing nonlinearities and 
+interactions that the linear model could not represent.
+
+One important limitation encountered in this project was the presence of missing data, particularly in earlier years and for some 
+energy-related variables. Restricting the analysis to years $\geq 1990$ and using complete cases improved data quality but reduced 
+the sample size and limited the historical scope of the analysis. In future work, it would be valuable to explore principled 
+methods for handling missing data (such as multiple imputation) or to incorporate additional data sources to obtain more complete 
+time series.
+
+If given more time, several extensions would be worthwhile: exploring additional nonlinear or semiparametric models (such as 
+gradient boosting or generalized additive models), incorporating temporal or country-specific effects through mixed models or 
+panel-data methods, and examining how policy interventions or technological changes affect emissions over time.
+
+Overall, the project provided meaningful insights into the drivers of CO$_2$ emissions while illustrating the contrasting strengths 
+of interpretable statistical models and modern machine learning methods. The combination of careful data preparation, appropriate 
+transformations, and complementary modeling tools resulted in a richer understanding of both the data and the global forces 
+shaping carbon emissions.
+
+
+\section{Appendix}
+```{r}
+# Load and assign data
+co2_raw <- read_csv("owid-co2-data.csv")
+```
+
+
+```{r}
+# Show Dimension
+dim(co2_raw)
+
+```
+
+```{r}
+# Glimpse Data
+dplyr::glimpse(co2_raw)
+
+```
+
+
+
+```{r}
+# Skim for detail overview of missing data
+skimr::skim_without_charts(co2_raw)
+
+```
+
+
+```{r}
+# View first 5 rows
+head(co2_raw)
+
+```
+
+```{r}
+# Filter
+co2_clean_raw <- co2_raw %>%
+  as.data.frame() %>%
+  filter(year >= 1990) %>%
+  select(
+    country, year,
+    co2_per_capita, gdp, population,
+    coal_co2, oil_co2, gas_co2,
+    primary_energy_consumption,
+    energy_per_capita, energy_per_gdp
+  )
+```
+
+```{r}
+#Create log-transformed versions of key variables
+co2_clean <- co2_clean_raw %>%
+  mutate(
+    log_co2_pc = log(co2_per_capita + 1),
+    log_gdp = log(gdp + 1),
+    log_pop = log(population + 1),
+    log_coal = log(coal_co2 + 1),
+    log_oil = log(oil_co2 + 1),
+    log_gas = log(gas_co2 + 1),
+    log_energy = log(primary_energy_consumption + 1),
+    log_epc = log(energy_per_capita + 1),
+    log_epg = log(energy_per_gdp + 1)
+  )
+```
+
+```{r}
+# Drop rows containing NA values in any of the log-transformed variables.
+# Regression cannot run with missing values, so this ensures a clean dataset.
+
+co2_clean <- co2_clean %>%
+  drop_na(log_co2_pc, log_gdp, log_pop, log_coal, log_oil, log_gas,
+          log_energy, log_epc, log_epg)
+
+# CHECK NEW DIMENSIONS
+dim(co2_clean)
+```
+
+
+
+
+```{r}
+# CORRELATION ON RAW VARIABLES
+corr_raw <- co2_clean_raw %>%
+  select(
+    co2_per_capita, gdp, population,
+    coal_co2, oil_co2, gas_co2,
+    primary_energy_consumption,
+    energy_per_capita, energy_per_gdp
+  )
+
+corr_matrix_raw <- cor(corr_raw, use = "complete.obs")
+
+corrplot(corr_matrix_raw, method = "color",
+         type = "upper", tl.col = "black", tl.srt = 45)
+
+```
+
+```{r}
+# Variables to check
+vars_to_check <- co2_clean %>%
+  select(co2_per_capita, gdp, population,
+         coal_co2, oil_co2, gas_co2,
+         primary_energy_consumption, energy_per_capita, energy_per_gdp)
+
+# Calculate skewness for each variable
+sapply(vars_to_check, skewness, na.rm = TRUE)
+
+```
+
+```{r}
+# Save clean file
+save(co2_clean, file = "co2_clean.RData")
+```
+
+
+```{r}
+# Recreate log-transformed variables (safe redundancy) and select
+# only the variables needed for modeling and visualization.
+# This makes the dataset lighter and easier to work with.
+
+co2_model <- co2_clean %>%
+  mutate(
+    log_co2_pc  = log(co2_per_capita + 1),
+    log_gdp     = log(gdp + 1),
+    log_pop     = log(population + 1),
+    log_coal    = log(coal_co2 + 1),
+    log_oil     = log(oil_co2 + 1),
+    log_gas     = log(gas_co2 + 1),
+    log_energy  = log(primary_energy_consumption + 1),
+    log_epc     = log(energy_per_capita + 1),
+    log_epg     = log(energy_per_gdp + 1)
+  ) %>%
+  select(country, year,
+         co2_per_capita, log_co2_pc,
+         log_gdp, log_pop,
+         log_coal, log_oil, log_gas,
+         log_energy, log_epc, log_epg)
+```
+
+
+```{r}
+# Before vs After histogram for CO2 per capita
+par(mfrow = c(1, 2))
+
+hist(co2_clean$co2_per_capita, 
+     main = "CO2 per Capita (Original)", 
+     xlab = "CO2 per Capita", 
+     col = "steelblue")
+
+hist(log(co2_clean$co2_per_capita + 1), 
+     main = "CO2 per Capita (Log Transformed)", 
+     xlab = "log(CO2 per Capita + 1)", 
+     col = "darkgreen")
+```
+
+
+```{r}
+# Before vs After histogram for GDP
+par(mfrow = c(1, 2))
+
+hist(co2_clean$gdp, 
+     main = "GDP (Original)", 
+     xlab = "GDP", 
+     col = "steelblue")
+
+hist(log(co2_clean$gdp + 1), 
+     main = "GDP (Log Transformed)", 
+     xlab = "log(GDP + 1)", 
+     col = "darkgreen")
+```
+
+
+```{r}
+# Before vs After histogram for Coal CO2
+par(mfrow = c(1, 2))
+
+hist(co2_clean$coal_co2, 
+     main = "Coal CO2 (Original)", 
+     xlab = "Coal CO2", 
+     col = "steelblue")
+
+hist(log(co2_clean$coal_co2 + 1), 
+     main = "Coal CO2 (Log Transformed)", 
+     xlab = "log(Coal CO2 + 1)", 
+     col = "darkgreen")
+```
+
+
+```{r}
+# Before vs After histogram for Primary Energy Consumption
+par(mfrow = c(1, 2))
+
+hist(co2_clean$primary_energy_consumption, 
+     main = "Primary Energy Consumption (Original)", 
+     xlab = "Primary Energy Consumption", 
+     col = "steelblue")
+
+hist(log(co2_clean$primary_energy_consumption + 1), 
+     main = "Primary Energy Consumption (Log Transformed)", 
+     xlab = "log(Primary Energy Consumption + 1)", 
+     col = "darkgreen")
+```
+
+
+```{r}
+# Create two side-by-side plots to visualize how log transformation
+# changes the relationship between GDP and CO2 per capita.
+par(mfrow = c(1, 2))
+
+plot(co2_clean$gdp, co2_clean$co2_per_capita,
+     main = "Original Scale",
+     xlab = "GDP", ylab = "CO2 per Capita", pch = 20, col = "grey")
+
+plot(log(co2_clean$gdp + 1), log(co2_clean$co2_per_capita + 1),
+     main = "Log Scale",
+     xlab = "log(GDP + 1)", ylab = "log(CO2 per Capita + 1)", 
+     pch = 20, col = "darkgreen")
+```
+
+
+```{r}
+set.seed(123)
+
+# 1. Train/Test Split (80/20)
+train_index <- createDataPartition(co2_clean$log_co2_pc, p = 0.8, list = FALSE)
+
+train_data <- co2_clean[train_index, ]
+test_data  <- co2_clean[-train_index, ]
+
+
+```
+
+```{r}
+# Create model matrices for ridge regression
+x_train <- model.matrix(log_co2_pc ~ . - country - year - co2_per_capita, data = train_data)[, -1]
+y_train <- train_data$log_co2_pc
+
+x_test <- model.matrix(log_co2_pc ~ . - country - year - co2_per_capita, data = test_data)[, -1]
+y_test <- test_data$log_co2_pc
+
+```
+
+
+```{r}
+# -----------------------------
+# 2. RIDGE REGRESSION (CV)
+# -----------------------------
+ridge_cv <- cv.glmnet(
+  x_train, y_train,
+  alpha = 0,          # ridge
+  nfolds = 10
+)
+
+ridge_cv$lambda.min   # best lambda
+
+# Fit final ridge model
+ridge_final <- glmnet(
+  x_train, y_train,
+  alpha = 0,
+  lambda = ridge_cv$lambda.min
+)
+
+```
+
+
+```{r}
+# Predictions
+ridge_train_pred <- predict(ridge_final, s = ridge_cv$lambda.min, newx = x_train)
+ridge_test_pred  <- predict(ridge_final, s = ridge_cv$lambda.min, newx = x_test)
+
+# Performance Metrics
+ridge_train_rmse <- rmse(y_train, ridge_train_pred)
+ridge_test_rmse  <- rmse(y_test, ridge_test_pred)
+
+ridge_train_mae <- mae(y_train, ridge_train_pred)
+ridge_test_mae  <- mae(y_test, ridge_test_pred)
+
+ridge_train_rmse; ridge_test_rmse
+ridge_train_mae; ridge_test_mae
+
+```
+
+```{r}
+# -----------------------------
+# 3. RANDOM FOREST (CV)
+# -----------------------------
+
+control <- trainControl(method = "cv", number = 10)
+
+rf_model <- train(
+  log_co2_pc ~ log_gdp + log_pop + log_coal + log_oil + log_gas +
+    log_energy + log_epc + log_epg,
+  data = train_data,
+  method = "rf",
+  trControl = control,
+  tuneLength = 5
+)
+
+# Best mtry
+rf_model$bestTune
+
+# Train RF with tuned mtry
+rf_final <- randomForest(
+  log_co2_pc ~ log_gdp + log_pop + log_coal + log_oil + log_gas +
+    log_energy + log_epc + log_epg,
+  data = train_data,
+  mtry = rf_model$bestTune$mtry,
+  ntree = 500
+)
+
+```
+
+
+```{r}
+# Predictions
+rf_train_pred <- predict(rf_final, newdata = train_data)
+rf_test_pred  <- predict(rf_final, newdata = test_data)
+
+# Performance Metrics
+rf_train_rmse <- rmse(y_train, rf_train_pred)
+rf_test_rmse  <- rmse(y_test, rf_test_pred)
+
+rf_train_mae <- mae(y_train, rf_train_pred)
+rf_test_mae  <- mae(y_test, rf_test_pred)
+
+rf_train_rmse; rf_test_rmse
+rf_train_mae; rf_test_mae
+
+# Variable importance plot
+varImpPlot(rf_final)
+```
+
+```{r}
+# Summary of errors
+ridge_train_rmse
+ridge_test_rmse
+ridge_train_mae
+ridge_test_mae
+rf_train_rmse
+rf_test_rmse
+rf_train_mae
+rf_test_mae
+```
+
+
+
+```{r}
+#Ridge Coeffiecient
+coef(ridge_cv, s = "lambda.min")
+```
+
+
+
